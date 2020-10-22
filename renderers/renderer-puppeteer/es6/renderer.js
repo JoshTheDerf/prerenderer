@@ -4,7 +4,7 @@ const puppeteer = require('puppeteer')
 const waitForRender = function (options) {
   options = options || {}
 
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve) => {
     // Render when an event fires on the document.
     if (options.renderAfterDocumentEvent) {
       if (window['__PRERENDER_STATUS'] && window['__PRERENDER_STATUS'].__DOCUMENT_EVENT_RESOLVED) resolve()
@@ -56,31 +56,15 @@ class PuppeteerRenderer {
     return this._puppeteer
   }
 
-  async handleRequestInterception (page, baseURL) {
-    await page.setRequestInterception(true)
-
-    page.on('request', req => {
-      // Skip third party requests if needed.
-      if (this._rendererOptions.skipThirdPartyRequests) {
-        if (!req.url().startsWith(baseURL)) {
-          req.abort()
-          return
-        }
-      }
-
-      req.continue()
-    })
-  }
-
   async renderRoutes (routes, Prerenderer) {
     const rootOptions = Prerenderer.getOptions()
     const options = this._rendererOptions
 
     const limiter = promiseLimit(this._rendererOptions.maxConcurrentRoutes)
 
-    const pagePromises = Promise.all(
+    return Promise.all(
       routes.map(
-        (route, index) => limiter(
+        (route) => limiter(
           async () => {
             const page = await this._puppeteer.newPage()
 
@@ -97,7 +81,31 @@ class PuppeteerRenderer {
             // Allow setting viewport widths and such.
             if (options.viewport) await page.setViewport(options.viewport)
 
-            await this.handleRequestInterception(page, baseURL)
+            // Add request interceptors.
+            await page.setRequestInterception(true)
+            page.on('request', req => {
+              // Skip third party requests if needed.
+              if (options.skipThirdPartyRequests) {
+                if (!req.url().startsWith(baseURL)) {
+                  req.abort()
+                  return
+                }
+              }
+
+              // Run the user's custom request interceptor, if available.
+              if (options.onRequest) {
+                options.onRequest(req)
+                return
+              }
+
+              req.continue()
+            })
+            if (options.onRequestFinished) {
+              page.on('requestfinished', options.onRequestFinished)
+            }
+            if (options.onRequestFailed) {
+              page.on('requestfailed', options.onRequestFailed)
+            }
 
             // Hack just in-case the document event fires before our main listener is added.
             if (options.renderAfterDocumentEvent) {
@@ -108,9 +116,9 @@ class PuppeteerRenderer {
                 })
               }, this._rendererOptions)
             }
-            
-            const navigationOptions = (options.navigationOptions) ? { waituntil: 'networkidle0', ...options.navigationOptions } : { waituntil: 'networkidle0' };
-            await page.goto(`${baseURL}${route}`, navigationOptions);
+
+            const navigationOptions = (options.navigationOptions) ? { waituntil: 'networkidle0', ...options.navigationOptions } : { waituntil: 'networkidle0' }
+            await page.goto(`${baseURL}${route}`, navigationOptions)
 
             // Wait for some specific element exists
             const { renderAfterElementExists } = this._rendererOptions
@@ -132,18 +140,16 @@ class PuppeteerRenderer {
         )
       )
     )
-
-    return pagePromises
   }
 
   destroy () {
-    if(this._puppeteer) {
+    if (this._puppeteer) {
       try {
         this._puppeteer.close()
       } catch (e) {
         console.error(e)
         console.error('[Prerenderer - PuppeteerRenderer] Unable to close Puppeteer')
-		  
+
         throw e
       }
     }
